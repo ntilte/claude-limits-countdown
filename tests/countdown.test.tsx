@@ -67,6 +67,29 @@ describe('formatTokens', () => {
   })
 })
 
+describe('colours', () => {
+  test('a window near its limit turns yellow, then red', async ($, on) => {
+    world(on, [
+      { kind: 'five_hour', percentUsed: 92, resetsAt: '2026-10-16T20:00:00Z' },
+      { kind: 'seven_day', percentUsed: 80, resetsAt: '2026-10-19T23:00:00Z' },
+    ], undefined, { tokens: 960_000, window: 1_000_000, percent: 96 })
+    await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+    const colors = async () => (await ui.findAll({ type: 'Text', text: /^(Сессия|Неделя|Контекст)/ })).map(t => t.props.color)
+    expect(await colors()).toEqual(['error', 'warning', 'error'])
+  })
+
+  test('a reset window is green', async ($, on) => {
+    const clock = world(on, LIMITS)
+    await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    await clock.advance(3 * 60 * MIN)
+
+    expect((await ui.find({ type: 'Text', text: /^Сессия/ }))?.props.color).toBe('success')
+  })
+})
+
 describe('band', () => {
   test('shows the session first, then the week, as time left', async ($, on) => {
     world(on, LIMITS)
@@ -157,7 +180,13 @@ describe('context', () => {
         'Контекст: 12% (120k из 1M)',
         'Сжать?',
       ])
-      expect(texts.map(t => [t.props.weight, t.props.dimColor])).toEqual(Array(4).fill(['bold', true]))
+      expect(texts.map(t => t.props.weight)).toEqual(Array(4).fill('bold'))
+      expect(texts.map(t => t.props.color ?? (t.props.dimColor ? 'dim' : undefined))).toEqual([
+        'suggestion',
+        'merged',
+        'claude',
+        'dim',
+      ])
       await ui.press({ key: 'compact-no' })
       await ui.unmount()
     }

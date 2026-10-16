@@ -28,17 +28,36 @@ function rank(kind: string): number {
   return i === -1 ? ORDER.length : i
 }
 
-export function describeLimits(limits: readonly Limit[], now: number): string[] {
+export type Row = { text: string; color: string }
+
+// Theme keys, so the colours follow the person's light or dark theme.
+function colorOf(kind: string): string {
+  if (kind === 'five_hour') return 'suggestion'
+  if (kind.startsWith('seven_day')) return 'merged'
+  if (kind === 'context') return 'claude'
+  return 'text'
+}
+
+// Near the edge the group's own colour gives way to a warning.
+export function toneOf(kind: string, percent: number): string {
+  if (percent >= 90) return 'error'
+  if (percent >= 75) return 'warning'
+  return colorOf(kind)
+}
+
+export function describeLimits(limits: readonly Limit[], now: number): Row[] {
   return [...limits]
     .sort((a, b) => rank(a.kind) - rank(b.kind))
     .map(limit => {
       const label = labelOf(limit.kind)
+      const percent = Math.round(limit.percentUsed)
+      const color = toneOf(limit.kind, percent)
       const resetsAt = limit.resetsAt === undefined ? NaN : Date.parse(limit.resetsAt)
 
-      if (Number.isNaN(resetsAt)) return `${label}: ${Math.round(limit.percentUsed)}%`
-      if (resetsAt <= now) return `${label}: лимит обновился`
+      if (Number.isNaN(resetsAt)) return { text: `${label}: ${percent}%`, color }
+      if (resetsAt <= now) return { text: `${label}: лимит обновился`, color: 'success' }
 
-      return `${label}: ${Math.round(limit.percentUsed)}%, сброс через ${formatLeft(resetsAt - now)}`
+      return { text: `${label}: ${percent}%, сброс через ${formatLeft(resetsAt - now)}`, color }
     })
 }
 
@@ -51,7 +70,7 @@ export function formatTokens(n: number): string {
 
 // The fill comes with each reply; right after a compaction there is none
 // yet, so the size the compaction reported stands in until the next one.
-export function describeContext(context: Context | null, compactedTo: number | null): string | null {
+export function describeContext(context: Context | null, compactedTo: number | null): Row | null {
   if (context === null || !(context.window > 0)) return null
 
   const window = formatTokens(context.window)
@@ -59,10 +78,17 @@ export function describeContext(context: Context | null, compactedTo: number | n
 
   if (context.tokens !== undefined) {
     const percent = context.percent ?? percentOf(context.tokens)
-    return `Контекст: ${percent}% (${formatTokens(context.tokens)} из ${window})`
+    return {
+      text: `Контекст: ${percent}% (${formatTokens(context.tokens)} из ${window})`,
+      color: toneOf('context', percent),
+    }
   }
   if (compactedTo !== null) {
-    return `Контекст: ≈${percentOf(compactedTo)}% (${formatTokens(compactedTo)} из ${window}) после сжатия`
+    const percent = percentOf(compactedTo)
+    return {
+      text: `Контекст: ≈${percent}% (${formatTokens(compactedTo)} из ${window}) после сжатия`,
+      color: toneOf('context', percent),
+    }
   }
-  return 'Контекст: обновится после ответа'
+  return { text: 'Контекст: обновится после ответа', color: colorOf('context') }
 }

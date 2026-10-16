@@ -127,17 +127,17 @@ export const register: Register = on => {
         columnGap={4}
         width="100%"
       >
-        {describeLimits(list, t).map((line, i) => (
-          <Text key={`limit-${i}`} dimColor tabular weight="bold">
-            {line}
+        {describeLimits(list, t).map((row, i) => (
+          <Text key={`limit-${i}`} color={row.color} tabular weight="bold">
+            {row.text}
           </Text>
         ))}
         {contextLine === null ? (
           []
         ) : (
           <Box flexDirection="row" alignItems="center" columnGap={2} flexShrink={0}>
-            <Text key="context" dimColor tabular weight="bold">
-              {contextLine}
+            <Text key="context" color={contextLine.color} tabular weight="bold">
+              {contextLine.text}
             </Text>
             {controls}
           </Box>
