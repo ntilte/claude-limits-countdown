@@ -141,14 +141,25 @@ describe('context', () => {
     }
   })
 
-  test('every line is drawn bold', async ($, on) => {
+  test('every line is bold and dim, the row centred', async ($, on) => {
     world(on, LIMITS, undefined, FILLED)
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
 
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ ...BAND, surface })
-      const weights = (await ui.findAll({ type: 'Text' })).map(t => t.props.weight)
-      expect(weights).toEqual(['bold', 'bold', 'bold'])
+      expect((await ui.findAll({ type: 'Box' }))[0]?.props.justifyContent).toBe('center')
+      await ui.press({ key: 'compact' })
+
+      const texts = await ui.findAll({ type: 'Text' })
+      expect(texts.map(t => t.text)).toEqual([
+        'Сессия: 8%, сброс через 2 ч 54 мин',
+        'Неделя: 5%, сброс через 3 д 5 ч',
+        'Контекст: 12% (120k из 1M)',
+        'Сжать?',
+      ])
+      expect(texts.map(t => [t.props.weight, t.props.dimColor])).toEqual(Array(4).fill(['bold', true]))
+      await ui.press({ key: 'compact-no' })
+      await ui.unmount()
     }
   })
 
@@ -193,11 +204,11 @@ describe('compact button', () => {
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ ...BAND, surface })
       await ui.press({ key: 'compact' })
-      expect((await ui.find({ type: 'Text', text: /^Сжать контекст/ }))?.text).toBe('Сжать контекст?')
+      expect((await ui.find({ type: 'Text', text: /^Сжать\?/ }))?.text).toBe('Сжать?')
       expect(await ui.find({ key: 'compact' })).toBeUndefined()
 
       await ui.press({ key: 'compact-yes' })
-      expect(await ui.find({ type: 'Text', text: /^Сжать контекст/ })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: /^Сжать\?/ })).toBeUndefined()
       expect((await ui.find({ type: 'Text', text: /^Контекст/ }))?.text).toBe('Контекст: ≈3% (30k из 1M) после сжатия')
       await ui.unmount()
     }

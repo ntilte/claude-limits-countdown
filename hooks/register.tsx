@@ -111,25 +111,31 @@ export const register: Register = on => {
         ? []
         : confirming
           ? [
-              <Text key="confirm" weight="bold">Сжать контекст?</Text>,
+              <Text key="confirm" dimColor weight="bold">Сжать?</Text>,
               <Button key="compact-yes" label="Да" variant="primary" onPress={() => void compact()} />,
               <Button key="compact-no" label="Нет" onPress={() => update($, isConfirming, () => false)} />,
             ]
           : [<Button key="compact" label="Сжать" dimColor onPress={() => update($, isConfirming, () => true)} />]
 
+    // One centred row; on a narrow band the groups wrap onto centred lines.
     return (
-      <Box flexDirection="row" justifyContent="space-between" columnGap={3} width="100%">
-        <Box flexDirection="row" flexWrap="wrap" columnGap={3} flexShrink={1}>
-          {describeLimits(list, t).map((line, i) => (
-            <Text key={`limit-${i}`} dimColor tabular weight="bold">
-              {line}
-            </Text>
-          ))}
-        </Box>
+      <Box
+        flexDirection="row"
+        flexWrap="wrap"
+        justifyContent="center"
+        alignItems="center"
+        columnGap={4}
+        width="100%"
+      >
+        {describeLimits(list, t).map((line, i) => (
+          <Text key={`limit-${i}`} dimColor tabular weight="bold">
+            {line}
+          </Text>
+        ))}
         {contextLine === null ? (
           []
         ) : (
-          <Box flexDirection="row" columnGap={2} flexShrink={0}>
+          <Box flexDirection="row" alignItems="center" columnGap={2} flexShrink={0}>
             <Text key="context" dimColor tabular weight="bold">
               {contextLine}
             </Text>
