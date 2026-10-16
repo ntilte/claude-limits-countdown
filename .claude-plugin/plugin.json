@@ -1,0 +1,8 @@
+{
+  "name": "limits-countdown",
+  "version": "0.3.0",
+  "description": "Строка над полем ввода: сколько осталось до сброса лимитов сессии и недели, справа заполнение контекста и кнопка сжатия.",
+  "author": { "name": "ntilte" },
+  "repository": "https://github.com/ntilte/claude-limits-countdown",
+  "types": "./types/index.d.ts"
+}

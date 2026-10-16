@@ -1,0 +1,6 @@
+{
+  "name": "ntd-local",
+  "description": "Моды Claude Code от ntilte.",
+  "owner": { "name": "ntilte" },
+  "plugins": [{ "name": "limits-countdown", "source": "./" }]
+}
