@@ -24,6 +24,7 @@ declare module 'claude-code' {
       later: Later | null
       armed: Armed | null
       isPicking: boolean
+      isTyping: boolean
     }
   }
 }
