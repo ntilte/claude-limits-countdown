@@ -122,3 +122,81 @@ export function preview(text: string, max = 28): string {
   const line = text.replace(/\s+/g, ' ').trim()
   return line.length <= max ? line : `${line.slice(0, max - 1)}…`
 }
+
+// One gauge of the band where a surface draws bars: a short coloured label,
+// a quiet detail beside it and how full the bar is.
+export type Meter = { key: string; label: string; detail: string; color: string; percent: number }
+
+export function limitMeters(limits: readonly Limit[], now: number): Meter[] {
+  return [...limits]
+    .sort((a, b) => rank(a.kind) - rank(b.kind))
+    .map(limit => {
+      const name = labelOf(limit.kind)
+      const percent = Math.round(limit.percentUsed)
+      const resetsAt = limit.resetsAt === undefined ? NaN : Date.parse(limit.resetsAt)
+
+      if (!Number.isNaN(resetsAt) && resetsAt <= now) {
+        return { key: limit.kind, label: name, detail: 'лимит обновился', color: 'success', percent: 0 }
+      }
+      return {
+        key: limit.kind,
+        label: `${name} ${percent}%`,
+        detail: Number.isNaN(resetsAt) ? '' : formatLeft(resetsAt - now),
+        color: toneOf(limit.kind, percent),
+        percent,
+      }
+    })
+}
+
+export function contextMeter(context: Context | null, compactedTo: number | null): Meter | null {
+  if (context === null || !(context.window > 0)) return null
+
+  const window = formatTokens(context.window)
+  const percentOf = (tokens: number) => Math.round((tokens / context.window) * 100)
+
+  if (context.tokens !== undefined) {
+    const percent = context.percent ?? percentOf(context.tokens)
+    return {
+      key: 'context',
+      label: `Контекст ${percent}%`,
+      detail: `${formatTokens(context.tokens)} из ${window}`,
+      color: toneOf('context', percent),
+      percent,
+    }
+  }
+  if (compactedTo !== null) {
+    const percent = percentOf(compactedTo)
+    return {
+      key: 'context',
+      label: `Контекст ≈${percent}%`,
+      detail: `${formatTokens(compactedTo)} из ${window}, после сжатия`,
+      color: toneOf('context', percent),
+      percent,
+    }
+  }
+  return { key: 'context', label: 'Контекст', detail: 'обновится после ответа', color: colorOf('context'), percent: 0 }
+}
+
+// A bar is drawn as an image, where the theme's keys mean nothing: each key
+// the band uses has a colour that reads on a light and on a dark page.
+const HEX: Record<string, string> = {
+  suggestion: '#5B9DF0',
+  merged: '#A78BFA',
+  claude: '#D97757',
+  warning: '#E0A030',
+  error: '#E5484D',
+  success: '#46A758',
+}
+
+export const BAR_WIDTH = 200
+
+export function barOf(percent: number, color: string): string {
+  const filled = Math.round((Math.min(100, Math.max(0, percent)) / 100) * BAR_WIDTH)
+  const fill = HEX[color] ?? '#888888'
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${BAR_WIDTH}" height="4" viewBox="0 0 ${BAR_WIDTH} 4">` +
+    `<rect width="${BAR_WIDTH}" height="4" rx="2" fill="#888888" fill-opacity="0.3"/>` +
+    (filled > 0 ? `<rect width="${Math.max(4, filled)}" height="4" rx="2" fill="${fill}"/>` : '') +
+    '</svg>'
+  )
+}

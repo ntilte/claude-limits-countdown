@@ -2,7 +2,17 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage, SessionRateLimit } from 'claude-code'
 
 import type { Armed, Context, Later, Limit, Reading } from '../types'
-import { describeContext, describeLimits, formatLeft, parseDelay, preview } from './format'
+import {
+  BAR_WIDTH,
+  barOf,
+  contextMeter,
+  describeContext,
+  describeLimits,
+  formatLeft,
+  limitMeters,
+  parseDelay,
+  preview,
+} from './format'
 
 const limits = atom({ plugin: 'limits-countdown', key: 'limits' } as const, [])
 const limitsAt = atom({ plugin: 'limits-countdown', key: 'limitsAt' } as const, 0)
@@ -26,11 +36,9 @@ const LATE_MS = 10 * MIN_MS
 // A reset is read a little late, so a message waiting for one goes after it.
 const AFTER_RESET_MS = MIN_MS
 const PRESETS: readonly (readonly [number, string])[] = [
-  [15, '15 мин'],
   [30, '30 мин'],
   [60, '1 ч'],
   [120, '2 ч'],
-  [300, '5 ч'],
 ]
 
 const plain = (list: readonly SessionRateLimit[]): Limit[] =>
@@ -315,7 +323,10 @@ export const register: Register = on => {
     const t = (await read($, now)) || (await $.clock.now())
     const confirming = await read($, isConfirming)
     const compacting = await read($, isCompacting)
-    const { Box, Button, Input, Text } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Button, Input, Text } = elements
+    // Bars are drawn where the surface has images; the terminal keeps its row of text.
+    const Svg = e.surface !== 'terminal' && 'Svg' in elements ? elements.Svg : undefined
     const held = await read($, later)
     const choice = await read($, armed)
     const picking = await read($, isPicking)
@@ -352,7 +363,7 @@ export const register: Register = on => {
             ]
           : picking
             ? [
-                <Text key="later-ask" dimColor weight="bold">Отправить через:</Text>,
+                <Text key="later-ask" dimColor weight="bold">Отправить через</Text>,
                 ...PRESETS.map(([minutes, label]) => (
                   <Button key={`later-${minutes}`} label={label} onPress={() => void pick($, { ms: minutes * MIN_MS })} />
                 )),
@@ -366,7 +377,7 @@ export const register: Register = on => {
                         onPress={() => void pick($, { at: resetAt + AFTER_RESET_MS })}
                       />,
                     ]),
-                <Input key="later-custom" placeholder="своё: 90, 2ч, 1ч30м" submitLabel="ок" onSubmit={value => void custom(value)} />,
+                <Input key="later-custom" placeholder="своё: 90, 2ч" submitLabel="ок" onSubmit={value => void custom(value)} />,
                 <Button key="later-cancel" label="Отмена" dimColor onPress={() => void cancel()} />,
               ]
             : [<Button key="later" label="Отложить" dimColor onPress={() => update($, isPicking, () => true)} />]
@@ -398,33 +409,72 @@ export const register: Register = on => {
             ]
           : [<Button key="compact" label="Сжать" dimColor onPress={() => update($, isConfirming, () => true)} />]
 
-    // One centred row; on a narrow band the groups wrap onto centred lines.
-    return (
-      <Box
-        flexDirection="row"
-        flexWrap="wrap"
-        justifyContent="center"
-        alignItems="center"
-        columnGap={4}
-        width="100%"
-      >
-        {describeLimits(list, t).map((row, i) => (
-          <Text key={`limit-${i}`} color={row.color} tabular weight="bold">
-            {row.text}
-          </Text>
-        ))}
-        {contextLine === null ? (
-          []
-        ) : (
-          <Box flexDirection="row" alignItems="center" columnGap={2} flexShrink={0}>
-            <Text key="context" color={contextLine.color} tabular weight="bold">
-              {contextLine.text}
+    const laterBox = (
+      <Box key="later-row" flexDirection="row" flexWrap="wrap" justifyContent="center" alignItems="center" columnGap={2}>
+        {laterRow}
+      </Box>
+    )
+
+    if (Svg === undefined) {
+      // One centred row; on a narrow band the groups wrap onto centred lines.
+      return (
+        <Box
+          flexDirection="row"
+          flexWrap="wrap"
+          justifyContent="center"
+          alignItems="center"
+          columnGap={4}
+          width="100%"
+        >
+          {describeLimits(list, t).map((row, i) => (
+            <Text key={`limit-${i}`} color={row.color} tabular weight="bold">
+              {row.text}
             </Text>
-            {controls}
-          </Box>
-        )}
-        <Box flexDirection="row" flexWrap="wrap" justifyContent="center" alignItems="center" columnGap={2}>
-          {laterRow}
+          ))}
+          {contextLine === null ? (
+            []
+          ) : (
+            <Box flexDirection="row" alignItems="center" columnGap={2} flexShrink={0}>
+              <Text key="context" color={contextLine.color} tabular weight="bold">
+                {contextLine.text}
+              </Text>
+              {controls}
+            </Box>
+          )}
+          {laterBox}
+        </Box>
+      )
+    }
+
+    // Gauges side by side, each a label over its bar; the buttons on a row
+    // of their own, which the time picker takes whole while it is open.
+    const fill = contextMeter(await read($, context), await read($, compactedTo))
+    const meters = [...limitMeters(list, t), ...(fill === null ? [] : [fill])]
+    const isChoosing = held === null && choice === null && picking
+
+    return (
+      <Box flexDirection="column" alignItems="center" rowGap={1} width="100%">
+        <Box flexDirection="row" flexWrap="wrap" justifyContent="center" columnGap={5} rowGap={1}>
+          {meters.map(meter => (
+            <Box key={`meter-${meter.key}`} flexDirection="column" alignItems="center" flexShrink={0}>
+              <Box flexDirection="row" alignItems="center" columnGap={2}>
+                <Text color={meter.color} tabular weight="bold">
+                  {meter.label}
+                </Text>
+                {meter.detail === '' ? [] : <Text dimColor tabular>{meter.detail}</Text>}
+              </Box>
+              <Svg
+                source={barOf(meter.percent, meter.color)}
+                alt={meter.detail === '' ? meter.label : `${meter.label}, ${meter.detail}`}
+                width={BAR_WIDTH}
+                height={4}
+              />
+            </Box>
+          ))}
+        </Box>
+        <Box flexDirection="row" flexWrap="wrap" justifyContent="center" alignItems="center" columnGap={3}>
+          {fill === null || isChoosing ? [] : controls}
+          {laterBox}
         </Box>
       </Box>
     )

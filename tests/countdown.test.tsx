@@ -29,7 +29,7 @@ const BAND = {
   },
 } as const
 
-const SURFACES = ['terminal', 'desktop'] as const
+const SURFACES = ['terminal'] as const
 const LIMIT_TEXT = /^(Сессия|Неделя)/
 
 function world(
@@ -106,7 +106,7 @@ describe('colours', () => {
       { kind: 'seven_day', percentUsed: 80, resetsAt: '2026-10-19T23:00:00Z' },
     ], {}, { tokens: 960_000, window: 1_000_000, percent: 96 })
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     const colors = async () => (await ui.findAll({ type: 'Text', text: /^(Сессия|Неделя|Контекст)/ })).map(t => t.props.color)
     expect(await colors()).toEqual(['error', 'warning', 'error'])
@@ -115,7 +115,7 @@ describe('colours', () => {
   test('a reset window is green', async ($, on) => {
     const { clock } = world(on, LIMITS)
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
     await clock.advance(3 * 60 * MIN)
 
     expect((await ui.find({ type: 'Text', text: /^Сессия/ }))?.props.color).toBe('success')
@@ -140,7 +140,7 @@ describe('band', () => {
   test('counts down as the clock ticks', async ($, on) => {
     const { clock } = world(on, LIMITS)
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     await clock.advance(6 * MIN)
 
@@ -152,7 +152,7 @@ describe('band', () => {
   test('a fresh session starts from the last reading kept', async ($, on) => {
     world(on, [], { limits: LIMITS })
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     expect((await ui.find({ type: 'Text', text: /Неделя/ }))?.text).toBe(
       'Неделя: 5%, сброс через 3 д 5 ч',
@@ -162,7 +162,7 @@ describe('band', () => {
   test('a window whose reset has passed says so', async ($, on) => {
     const { clock } = world(on, LIMITS)
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     await clock.advance(3 * 60 * MIN)
 
@@ -177,7 +177,7 @@ describe('band', () => {
       rateLimits: [{ kind: 'five_hour', percentUsed: 12, resetsAt: '2026-10-16T20:00:00Z' }],
       changed: ['rateLimits'],
     })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     const lines = (await ui.findAll({ type: 'Text', text: LIMIT_TEXT })).map(t => t.text)
     expect(lines).toEqual(['Сессия: 12%, сброс через 2 ч 54 мин'])
@@ -204,7 +204,7 @@ describe('sessions side by side', () => {
   test('an idle session takes up the newer reading another one shared', async ($, on) => {
     const { clock, store } = world(on, LIMITS)
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     store.reading = NEWER
     await clock.advance(15_000)
@@ -216,7 +216,7 @@ describe('sessions side by side', () => {
   test('a fresh session starts from the shared reading', async ($, on) => {
     world(on, [], { reading: NEWER, limits: LIMITS })
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     expect((await ui.find({ type: 'Text', text: /^Сессия/ }))?.text).toBe('Сессия: 40%, сброс через 2 ч 54 мин')
   })
@@ -226,7 +226,7 @@ describe('sessions side by side', () => {
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
     await clock.advance(15_000)
     await $.session.measure({ context: FILLED, rateLimits: LIMITS, changed: ['context'] })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     expect(store.reading).toEqual(NEWER)
     expect((await ui.find({ type: 'Text', text: /^Сессия/ }))?.text).toBe('Сессия: 40%, сброс через 2 ч 53 мин')
@@ -276,7 +276,7 @@ describe('context', () => {
   test('says it waits for a reply before the first one', async ($, on) => {
     world(on, [])
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     expect((await ui.find({ type: 'Text', text: /^Контекст/ }))?.text).toBe('Контекст: обновится после ответа')
   })
@@ -285,7 +285,7 @@ describe('context', () => {
     world(on, LIMITS)
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
     await $.session.measure({ context: FILLED, rateLimits: [], changed: ['context'] })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     expect((await ui.find({ type: 'Text', text: /^Контекст/ }))?.text).toBe('Контекст: 12% (120k из 1M)')
   })
@@ -293,7 +293,7 @@ describe('context', () => {
   test('hides the button while a turn runs', async ($, on) => {
     world(on, LIMITS, {}, FILLED)
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, isWorking: true }, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, isWorking: true }, surface: 'terminal' })
 
     expect((await ui.find({ type: 'Text', text: /^Контекст/ }))?.text).toBe('Контекст: 12% (120k из 1M)')
     expect(await ui.find({ key: 'compact' })).toBeUndefined()
@@ -302,7 +302,7 @@ describe('context', () => {
   test('picks up a /clear with no measurement of its own', async ($, on) => {
     const { clock, usage } = world(on, LIMITS, {}, FILLED)
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     usage.context = { window: 1_000_000 }
     await clock.advance(15_000)
@@ -342,7 +342,7 @@ describe('compact button', () => {
       await ui.unmount()
     }
 
-    expect(runs).toEqual(['', ''])
+    expect(runs).toEqual([''])
   })
 
   test('a /compact typed by hand shows the new size too', async ($, on) => {
@@ -352,7 +352,7 @@ describe('compact button', () => {
 
     await $.session.compact({ trigger: 'manual', messages: SUMMARY })
     await $.session.measure({ context: { window: 1_000_000 }, rateLimits: [], changed: ['context'] })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     expect((await ui.find({ type: 'Text', text: /^Контекст/ }))?.text).toBe('Контекст: ≈5% (50k из 1M) после сжатия')
 
@@ -365,7 +365,7 @@ describe('compact button', () => {
     const runs = compactCommand(on, () => $.session.compact({ trigger: 'manual', messages: SUMMARY }))
     on('session.compact', () => ({ messages: SUMMARY }))
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     await ui.press({ key: 'compact' })
     await ui.press({ key: 'compact-no' })
@@ -379,7 +379,7 @@ describe('compact button', () => {
     compactCommand(on, () => $.session.compact({ trigger: 'manual', messages: SUMMARY }))
     on('session.compact', () => ({ skip: 'blocked by a hook' }))
     await $.session.start({ cwd: 'C:/', surface: 'desktop', isInteractive: true })
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     await ui.press({ key: 'compact' })
     await ui.press({ key: 'compact-yes' })
@@ -420,7 +420,7 @@ describe('send later', () => {
     const { clock, store } = world(on, LIMITS)
     const { box, sent } = composer(on, 'Продолжай работу')
     await $.session.start(START)
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     await ui.press({ key: 'later' })
     await ui.press({ key: 'later-30' })
@@ -442,7 +442,7 @@ describe('send later', () => {
     const { clock } = world(on, LIMITS)
     const { sent } = composer(on)
     await $.session.start(START)
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     await ui.press({ key: 'later' })
     await ui.input({ key: 'later-custom', text: '1ч30м' })
@@ -466,7 +466,7 @@ describe('send later', () => {
     const { clock } = world(on, LIMITS)
     const { sent } = composer(on, 'Дальше')
     await $.session.start(START)
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     await ui.press({ key: 'later' })
     await ui.press({ key: 'later-reset' })
@@ -482,11 +482,11 @@ describe('send later', () => {
     const { clock } = world(on, [{ kind: 'five_hour', percentUsed: 100, resetsAt: '2026-10-16T20:00:00Z' }])
     const { sent } = composer(on, 'Дальше')
     await $.session.start(START)
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     await ui.press({ key: 'later' })
-    await ui.press({ key: 'later-15' })
-    await clock.advance(16 * MIN)
+    await ui.press({ key: 'later-30' })
+    await clock.advance(31 * MIN)
 
     expect(sent).toEqual([])
     await clock.advance(160 * MIN)
@@ -497,7 +497,7 @@ describe('send later', () => {
     const { clock, store } = world(on, LIMITS)
     const { box, sent } = composer(on, 'Раз')
     await $.session.start(START)
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     await ui.press({ key: 'later' })
     await ui.press({ key: 'later-60' })
@@ -518,7 +518,7 @@ describe('send later', () => {
     const { clock } = world(on, LIMITS, { 'later:one': { text: 'Старое', dueAt: NOW - 60 * MIN } })
     const { sent } = composer(on)
     await $.session.start(START)
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
     expect((await ui.find({ type: 'Text', text: LATER_TEXT }))?.text).toBe('Не отправлено вовремя: «Старое»')
     await clock.advance(5 * MIN)
@@ -549,5 +549,41 @@ describe('send later', () => {
 
     await clock.advance(121 * MIN)
     expect(sent).toEqual(['Запусти тесты'])
+  })
+})
+
+describe('gauges on the desktop', () => {
+  test('each limit and the context is a label over a bar', async ($, on) => {
+    world(on, LIMITS, {}, FILLED)
+    composer(on)
+    await $.session.start(START)
+    await $.session.measure({ context: FILLED, rateLimits: LIMITS, changed: ['context'] })
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+    const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+    expect(texts.slice(0, 6)).toEqual(['Сессия 8%', '2 ч 54 мин', 'Неделя 5%', '3 д 5 ч', 'Контекст 12%', '120k из 1M'])
+    expect(await ui.findAll({ type: 'Svg' })).toHaveLength(3)
+    expect(await ui.find({ key: 'compact' })).toBeDefined()
+    expect(await ui.find({ key: 'later' })).toBeDefined()
+  })
+
+  test('the time picker takes the button row whole', async ($, on) => {
+    world(on, LIMITS, {}, FILLED)
+    composer(on)
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+    await ui.press({ key: 'later' })
+    expect(await ui.find({ key: 'compact' })).toBeUndefined()
+    expect((await ui.findAll({ type: 'Button' })).map(button => button.key)).toEqual([
+      'later-30',
+      'later-60',
+      'later-120',
+      'later-reset',
+      'later-cancel',
+    ])
+
+    await ui.press({ key: 'later-cancel' })
+    expect(await ui.find({ key: 'compact' })).toBeDefined()
   })
 })
