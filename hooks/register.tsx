@@ -36,9 +36,9 @@ const LATE_MS = 10 * MIN_MS
 // A reset is read a little late, so a message waiting for one goes after it.
 const AFTER_RESET_MS = MIN_MS
 const PRESETS: readonly (readonly [number, string])[] = [
-  [30, '30 мин'],
-  [60, '1 ч'],
-  [120, '2 ч'],
+  [30, 'через 30 мин'],
+  [60, 'через 1 ч'],
+  [120, 'через 2 ч'],
 ]
 
 const plain = (list: readonly SessionRateLimit[]): Limit[] =>
@@ -357,13 +357,12 @@ export const register: Register = on => {
         : choice !== null
           ? [
               <Text key="later-armed" color="suggestion" weight="bold">
-                {`Напишите и отправьте сообщение — уйдёт через ${formatLeft(dueOf(choice, t) - t)}`}
+                {`Теперь напишите сообщение и отправьте как обычно — оно уйдёт через ${formatLeft(dueOf(choice, t) - t)}`}
               </Text>,
               <Button key="later-cancel" label="Отмена" dimColor onPress={() => void cancel()} />,
             ]
           : picking
             ? [
-                <Text key="later-ask" dimColor weight="bold">Отправить через</Text>,
                 ...PRESETS.map(([minutes, label]) => (
                   <Button key={`later-${minutes}`} label={label} onPress={() => void pick($, { ms: minutes * MIN_MS })} />
                 )),
@@ -372,12 +371,12 @@ export const register: Register = on => {
                   : [
                       <Button
                         key="later-reset"
-                        label="После сброса"
+                        label={`когда обновится лимит (${formatLeft(resetAt - t)})`}
                         variant="primary"
                         onPress={() => void pick($, { at: resetAt + AFTER_RESET_MS })}
                       />,
                     ]),
-                <Input key="later-custom" placeholder="своё: 90, 2ч" submitLabel="ок" onSubmit={value => void custom(value)} />,
+                <Input key="later-custom" label="или через" placeholder="90 (минут), 2ч, 1ч30м" submitLabel="отложить" onSubmit={value => void custom(value)} />,
                 <Button key="later-cancel" label="Отмена" dimColor onPress={() => void cancel()} />,
               ]
             : [<Button key="later" label="Отложить" dimColor onPress={() => update($, isPicking, () => true)} />]
@@ -409,9 +408,19 @@ export const register: Register = on => {
             ]
           : [<Button key="compact" label="Сжать" dimColor onPress={() => update($, isConfirming, () => true)} />]
 
+    // The picker says what will be sent before it asks when.
     const laterBox = (
-      <Box key="later-row" flexDirection="row" flexWrap="wrap" justifyContent="center" alignItems="center" columnGap={2}>
-        {laterRow}
+      <Box key="later-row" flexDirection="column" alignItems="center">
+        {held === null && choice === null && picking ? (
+          <Text dimColor>
+            Когда отправить? Отложу текст из поля ввода, а если оно пустое — следующее сообщение, которое вы отправите.
+          </Text>
+        ) : (
+          []
+        )}
+        <Box flexDirection="row" flexWrap="wrap" justifyContent="center" alignItems="center" columnGap={2}>
+          {laterRow}
+        </Box>
       </Box>
     )
 

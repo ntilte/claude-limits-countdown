@@ -76,7 +76,7 @@ function composer(on: On, draft = '') {
 }
 
 const START = { cwd: 'C:/', surface: 'desktop', isInteractive: true } as const
-const LATER_TEXT = /^(Отправлю|Не отправлено|Напишите)/
+const LATER_TEXT = /^(Отправлю|Не отправлено|Теперь напишите)/
 
 describe('formatLeft', () => {
   test('days and hours past a day, hours and minutes under it', async () => {
@@ -447,7 +447,7 @@ describe('send later', () => {
     await ui.press({ key: 'later' })
     await ui.input({ key: 'later-custom', text: '1ч30м' })
     expect((await ui.find({ type: 'Text', text: LATER_TEXT }))?.text).toBe(
-      'Напишите и отправьте сообщение — уйдёт через 1 ч 30 мин',
+      'Теперь напишите сообщение и отправьте как обычно — оно уйдёт через 1 ч 30 мин',
     )
 
     const entered = await $.prompt.submit({ text: 'Проверь сборку', origin: { kind: 'composer' } })
@@ -575,6 +575,8 @@ describe('gauges on the desktop', () => {
 
     await ui.press({ key: 'later' })
     expect(await ui.find({ key: 'compact' })).toBeUndefined()
+    expect((await ui.find({ type: 'Text', text: /^Когда отправить/ }))?.text).toMatch(/следующее сообщение/)
+    expect((await ui.find({ key: 'later-reset' }))?.text).toBe('когда обновится лимит (2 ч 54 мин)')
     expect((await ui.findAll({ type: 'Button' })).map(button => button.key)).toEqual([
       'later-30',
       'later-60',
