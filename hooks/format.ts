@@ -92,3 +92,33 @@ export function describeContext(context: Context | null, compactedTo: number | n
   }
   return { text: 'Контекст: обновится после ответа', color: colorOf('context') }
 }
+
+const MIN_MS = 60_000
+export const MAX_DELAY_MS = 7 * 24 * 60 * MIN_MS
+
+// A wait as a person writes it: "90" (minutes), "2ч", "1ч30м", "1.5h",
+// "45 мин", "1:30". Null for anything else, under a minute or over a week.
+export function parseDelay(raw: string): number | null {
+  const s = raw.trim().toLowerCase().replace(/,/g, '.')
+  if (s === '') return null
+
+  let minutes: number | null = null
+  const clock = /^(\d{1,3}):(\d{1,2})$/.exec(s)
+  const parts =
+    /^(?:(\d+(?:\.\d+)?)\s*(?:ч|час[а-я]*|h|hours?|hrs?))?\s*(?:(\d+(?:\.\d+)?)\s*(?:м|мин[а-я]*|m|min[a-z]*)?)?$/.exec(s)
+
+  if (clock) minutes = Number(clock[1]) * 60 + Number(clock[2])
+  else if (parts && (parts[1] !== undefined || parts[2] !== undefined)) {
+    minutes = Number(parts[1] ?? 0) * 60 + Number(parts[2] ?? 0)
+  }
+  if (minutes === null || !Number.isFinite(minutes)) return null
+
+  const ms = Math.round(minutes * MIN_MS)
+  return ms >= MIN_MS && ms <= MAX_DELAY_MS ? ms : null
+}
+
+// The start of a held message, on one line, to tell it by.
+export function preview(text: string, max = 28): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  return line.length <= max ? line : `${line.slice(0, max - 1)}…`
+}

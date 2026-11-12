@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On, SessionContextUsage, SessionRateLimit } from 'claude-code'
 
 import type { Reading } from '../types'
-import { formatLeft, formatTokens } from '../hooks/format'
+import { formatLeft, formatTokens, parseDelay, preview } from '../hooks/format'
 
 const NOW = Date.parse('2026-10-16T17:06:00Z')
 const MIN = 60_000
@@ -46,12 +46,37 @@ function world(
     store[e.key] = e.value
     return { value: undefined }
   })
+  on('store.delete', ($, e) => {
+    delete store[e.key]
+    return { value: undefined }
+  })
+  on('session.id', () => ({ value: 'one' }))
+  on('command.register', () => ({ value: undefined }))
   const usage = { context, rateLimits }
   on('session.usage', () => ({ value: { startedAt: NOW, ...usage } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.measure', ($, e) => ({ changed: e.changed }))
   return { clock, store, usage }
 }
+
+// The prompt box and what was sent as the person's own.
+function composer(on: On, draft = '') {
+  const box = { text: draft }
+  const sent: string[] = []
+  on('prompt.read', () => ({ value: { text: box.text, cursor: box.text.length } }))
+  on('prompt.fill', ($, e) => {
+    box.text = e.text
+    return { isFilled: true, text: e.text, cursor: e.text.length }
+  })
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  return { box, sent }
+}
+
+const START = { cwd: 'C:/', surface: 'desktop', isInteractive: true } as const
+const LATER_TEXT = /^(Отправлю|Не отправлено|Напишите)/
 
 describe('formatLeft', () => {
   test('days and hours past a day, hours and minutes under it', async () => {
@@ -361,5 +386,168 @@ describe('compact button', () => {
 
     expect(await ui.find({ key: 'compact' })).toBeDefined()
     expect((await ui.find({ type: 'Text', text: /^Контекст/ }))?.text).toBe('Контекст: 12% (120k из 1M)')
+  })
+})
+
+describe('parseDelay', () => {
+  test('minutes, hours and both, in Russian or Latin letters', async () => {
+    expect(parseDelay('90')).toBe(90 * MIN)
+    expect(parseDelay('2ч')).toBe(120 * MIN)
+    expect(parseDelay('1ч30м')).toBe(90 * MIN)
+    expect(parseDelay('1 ч 30 мин')).toBe(90 * MIN)
+    expect(parseDelay('1.5h')).toBe(90 * MIN)
+    expect(parseDelay('1,5 часа')).toBe(90 * MIN)
+    expect(parseDelay('45m')).toBe(45 * MIN)
+    expect(parseDelay('1:30')).toBe(90 * MIN)
+  })
+
+  test('refuses what is no time, too short or too long', async () => {
+    expect(parseDelay('')).toBeNull()
+    expect(parseDelay('завтра')).toBeNull()
+    expect(parseDelay('0')).toBeNull()
+    expect(parseDelay('999ч')).toBeNull()
+  })
+
+  test('preview keeps one short line', async () => {
+    expect(preview('Продолжай')).toBe('Продолжай')
+    expect(preview('a\n b', 10)).toBe('a b')
+    expect(preview('x'.repeat(40), 10)).toBe('xxxxxxxxx…')
+  })
+})
+
+describe('send later', () => {
+  test('holds the draft, counts down and sends it on time', async ($, on) => {
+    const { clock, store } = world(on, LIMITS)
+    const { box, sent } = composer(on, 'Продолжай работу')
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+    await ui.press({ key: 'later' })
+    await ui.press({ key: 'later-30' })
+
+    expect(box.text).toBe('')
+    expect((await ui.find({ type: 'Text', text: LATER_TEXT }))?.text).toBe('Отправлю через 30 мин: «Продолжай работу»')
+    expect(store['later:one']).toEqual({ text: 'Продолжай работу', dueAt: NOW + 30 * MIN })
+
+    await clock.advance(29 * MIN)
+    expect(sent).toEqual([])
+
+    await clock.advance(2 * MIN)
+    expect(sent).toEqual(['Продолжай работу'])
+    expect(store['later:one']).toBeUndefined()
+    expect(await ui.find({ key: 'later' })).toBeDefined()
+  })
+
+  test('with an empty box the next message sent is held', async ($, on) => {
+    const { clock } = world(on, LIMITS)
+    const { sent } = composer(on)
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+    await ui.press({ key: 'later' })
+    await ui.input({ key: 'later-custom', text: '1ч30м' })
+    expect((await ui.find({ type: 'Text', text: LATER_TEXT }))?.text).toBe(
+      'Напишите и отправьте сообщение — уйдёт через 1 ч 30 мин',
+    )
+
+    const entered = await $.prompt.submit({ text: 'Проверь сборку', origin: { kind: 'composer' } })
+    expect(entered.drop).toBe('Отложено: отправлю через 1 ч 30 мин.')
+    expect(sent).toEqual([])
+
+    await clock.advance(91 * MIN)
+    expect(sent).toEqual(['Проверь сборку'])
+
+    // Nothing is armed any more: the next message goes straight through.
+    await $.prompt.submit({ text: 'Сразу', origin: { kind: 'composer' } })
+    expect(sent).toEqual(['Проверь сборку', 'Сразу'])
+  })
+
+  test('"После сброса" waits for the session window to reset', async ($, on) => {
+    const { clock } = world(on, LIMITS)
+    const { sent } = composer(on, 'Дальше')
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+    await ui.press({ key: 'later' })
+    await ui.press({ key: 'later-reset' })
+    expect((await ui.find({ type: 'Text', text: LATER_TEXT }))?.text).toBe('Отправлю через 2 ч 55 мин: «Дальше»')
+
+    await clock.advance(174 * MIN)
+    expect(sent).toEqual([])
+    await clock.advance(2 * MIN)
+    expect(sent).toEqual(['Дальше'])
+  })
+
+  test('a spent limit pushes the message past its reset', async ($, on) => {
+    const { clock } = world(on, [{ kind: 'five_hour', percentUsed: 100, resetsAt: '2026-10-16T20:00:00Z' }])
+    const { sent } = composer(on, 'Дальше')
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+    await ui.press({ key: 'later' })
+    await ui.press({ key: 'later-15' })
+    await clock.advance(16 * MIN)
+
+    expect(sent).toEqual([])
+    await clock.advance(160 * MIN)
+    expect(sent).toEqual(['Дальше'])
+  })
+
+  test('cancel drops it, "Сейчас" sends at once', async ($, on) => {
+    const { clock, store } = world(on, LIMITS)
+    const { box, sent } = composer(on, 'Раз')
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+    await ui.press({ key: 'later' })
+    await ui.press({ key: 'later-60' })
+    await ui.press({ key: 'later-cancel' })
+    expect(store['later:one']).toBeUndefined()
+    await clock.advance(61 * MIN)
+    expect(sent).toEqual([])
+
+    box.text = 'Два'
+    await ui.press({ key: 'later' })
+    await ui.press({ key: 'later-60' })
+    await ui.press({ key: 'later-now' })
+    await clock.settle()
+    expect(sent).toEqual(['Два'])
+  })
+
+  test('survives a restart; one long overdue waits to be asked', async ($, on) => {
+    const { clock } = world(on, LIMITS, { 'later:one': { text: 'Старое', dueAt: NOW - 60 * MIN } })
+    const { sent } = composer(on)
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+    expect((await ui.find({ type: 'Text', text: LATER_TEXT }))?.text).toBe('Не отправлено вовремя: «Старое»')
+    await clock.advance(5 * MIN)
+    expect(sent).toEqual([])
+
+    await ui.press({ key: 'later-now' })
+    await clock.settle()
+    expect(sent).toEqual(['Старое'])
+  })
+
+  test('one still ahead after a restart goes out on time', async ($, on) => {
+    const { clock } = world(on, LIMITS, { 'later:one': { text: 'Скоро', dueAt: NOW + 5 * MIN } })
+    const { sent } = composer(on)
+    await $.session.start(START)
+
+    await clock.advance(6 * MIN)
+    expect(sent).toEqual(['Скоро'])
+  })
+
+  test('/later takes the time and the text', async ($, on) => {
+    const { clock } = world(on, LIMITS)
+    const { sent } = composer(on)
+    await $.session.start(START)
+
+    const ran = await $.command.run({ command: 'later', args: '2ч Запусти тесты' })
+    expect(ran.text).toBe('Отложено: отправлю через 2 ч.')
+    expect((await $.command.run({ command: 'later', args: 'когда-нибудь' })).text).toMatch(/^Не понял время/)
+
+    await clock.advance(121 * MIN)
+    expect(sent).toEqual(['Запусти тесты'])
   })
 })
