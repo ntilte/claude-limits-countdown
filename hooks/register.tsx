@@ -395,23 +395,21 @@ export const register: Register = on => {
       else await pick($, { ms })
     }
 
-    // Each waiting message on a row of its own, soonest first.
+    // Each waiting message on a row of its own, soonest first, the rows laid
+    // out as a table: the texts from one left edge, the buttons in a column
+    // on the right. A button stands taller than a line of text, so the rows
+    // keep a line between them.
     const rows = items.slice(0, SHOWN).map(item => (
-      <Box
-        key={`later-item-${item.id}`}
-        flexDirection="row"
-        flexWrap="wrap"
-        justifyContent="center"
-        alignItems="center"
-        columnGap={2}
-      >
-        <Text color={item.isHeld ? 'warning' : 'suggestion'} tabular weight="bold">
-          {item.isHeld
-            ? `Не отправлено вовремя: «${preview(item.text)}»`
-            : item.dueAt <= t
-              ? `Отправляю: «${preview(item.text)}»`
-              : `Отправлю через ${formatLeft(item.dueAt - t)}: «${preview(item.text)}»`}
-        </Text>
+      <Box key={`later-item-${item.id}`} flexDirection="row" alignItems="center" columnGap={2}>
+        <Box flexGrow={1}>
+          <Text color={item.isHeld ? 'warning' : 'suggestion'} tabular weight="bold">
+            {item.isHeld
+              ? `Не отправлено вовремя: «${preview(item.text)}»`
+              : item.dueAt <= t
+                ? `Отправляю: «${preview(item.text)}»`
+                : `Отправлю через ${formatLeft(item.dueAt - t)}: «${preview(item.text)}»`}
+          </Text>
+        </Box>
         <Button key={`later-now-${item.id}`} label="Сейчас" dimColor onPress={() => void sendDue($, item.id)} />
         <Button
           key={`later-cancel-${item.id}`}
@@ -425,8 +423,10 @@ export const register: Register = on => {
       items.length === 0 ? (
         []
       ) : (
-        <Box key="later-queue" flexDirection="column" alignItems="center" width="100%">
-          {rows}
+        <Box key="later-queue" flexDirection="column" alignItems="center" rowGap={1} width="100%">
+          <Box key="later-list" flexDirection="column" alignItems="stretch" rowGap={1}>
+            {rows}
+          </Box>
           {items.length > SHOWN ? (
             <Text key="later-more" dimColor>
               {`и ещё ${items.length - SHOWN}, весь список: /later`}

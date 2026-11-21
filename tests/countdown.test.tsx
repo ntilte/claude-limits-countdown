@@ -727,6 +727,11 @@ describe('several messages', () => {
     const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
     expect((await ui.findAll(LATER_ROWS)).map(t => t.text)).toEqual(['Отправлю через 30 мин: «Раз»', 'Отправлю через 1 ч: «Два»'])
+    // A line between the rows, so the buttons do not run into each other;
+    // the rows as wide as the widest, the buttons lined up on the right.
+    const list = await ui.find({ key: 'later-list' })
+    expect(list?.props.rowGap).toBe(1)
+    expect(list?.props.alignItems).toBe('stretch')
     expect((await ui.findAll({ type: 'Button' })).map(button => button.key)).toEqual([
       'later-now-1',
       'later-cancel-1',
