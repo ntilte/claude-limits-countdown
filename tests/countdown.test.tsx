@@ -21,6 +21,7 @@ const BAND = {
   component: 'AbovePrompt',
   props: {
     hasSurvey: false,
+    isCollapsed: false,
     isWorking: false,
     maxRows: 10,
     bodyColumns: 120,
@@ -427,7 +428,7 @@ describe('send later', () => {
 
     expect(box.text).toBe('')
     expect((await ui.find({ type: 'Text', text: LATER_TEXT }))?.text).toBe('Отправлю через 30 мин: «Продолжай работу»')
-    expect(store['later:one']).toEqual({ text: 'Продолжай работу', dueAt: NOW + 30 * MIN })
+    expect(store['later:one']).toEqual([{ id: 1, text: 'Продолжай работу', dueAt: NOW + 30 * MIN }])
 
     await clock.advance(29 * MIN)
     expect(sent).toEqual([])
@@ -502,7 +503,7 @@ describe('send later', () => {
 
     await ui.press({ key: 'later' })
     await ui.press({ key: 'later-60' })
-    await ui.press({ key: 'later-cancel' })
+    await ui.press({ key: 'later-cancel-1' })
     expect(store['later:one']).toBeUndefined()
     await clock.advance(61 * MIN)
     expect(sent).toEqual([])
@@ -510,7 +511,7 @@ describe('send later', () => {
     box.text = 'Два'
     await ui.press({ key: 'later' })
     await ui.press({ key: 'later-60' })
-    await ui.press({ key: 'later-now' })
+    await ui.press({ key: 'later-now-1' })
     await clock.settle()
     expect(sent).toEqual(['Два'])
   })
@@ -525,7 +526,7 @@ describe('send later', () => {
     await clock.advance(5 * MIN)
     expect(sent).toEqual([])
 
-    await ui.press({ key: 'later-now' })
+    await ui.press({ key: 'later-now-1' })
     await clock.settle()
     expect(sent).toEqual(['Старое'])
   })
@@ -550,6 +551,190 @@ describe('send later', () => {
 
     await clock.advance(121 * MIN)
     expect(sent).toEqual(['Запусти тесты'])
+  })
+})
+
+// The week spent, the session window fresh: only the week's reset lets a message through.
+const WEEK_SPENT: SessionRateLimit[] = [
+  { kind: 'five_hour', percentUsed: 0, resetsAt: '2026-10-16T20:00:00Z' },
+  { kind: 'seven_day', percentUsed: 100, resetsAt: '2026-10-19T23:00:00Z' },
+]
+
+describe('after the reset', () => {
+  test('a spent week waits for the week, not the session window', async ($, on) => {
+    const { clock, store } = world(on, WEEK_SPENT)
+    const { sent } = composer(on, 'Дальше')
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+    await ui.press({ key: 'later' })
+    expect((await ui.find({ key: 'later-reset' }))?.text).toBe('после сброса недели')
+    await ui.press({ key: 'later-reset' })
+
+    expect((await ui.find({ type: 'Text', text: LATER_TEXT }))?.text).toBe('Отправлю через 3 д 5 ч: «Дальше»')
+    expect(store['later:one']).toEqual([{ id: 1, text: 'Дальше', dueAt: Date.parse('2026-10-19T23:01:00Z') }])
+
+    // The session window resets with the week still spent: nothing goes.
+    await clock.advance(3 * 60 * MIN)
+    expect(sent).toEqual([])
+  })
+
+  test('/later сброс takes the week too', async ($, on) => {
+    world(on, WEEK_SPENT)
+    composer(on)
+    await $.session.start(START)
+
+    const ran = await $.command.run({ command: 'later', args: 'сброс Дальше' })
+    expect(ran.text).toBe('Отложено: отправлю через 3 д 5 ч.')
+  })
+
+  test('with nothing spent it is the session window', async ($, on) => {
+    world(on, LIMITS)
+    composer(on)
+    await $.session.start(START)
+
+    const ran = await $.command.run({ command: 'later', args: 'сброс Дальше' })
+    expect(ran.text).toBe('Отложено: отправлю через 2 ч 55 мин.')
+  })
+
+  test('both spent: the later of the two resets', async ($, on) => {
+    world(on, [
+      { kind: 'five_hour', percentUsed: 100, resetsAt: '2026-10-16T20:00:00Z' },
+      { kind: 'seven_day', percentUsed: 100, resetsAt: '2026-10-19T23:00:00Z' },
+    ])
+    composer(on)
+    await $.session.start(START)
+
+    const ran = await $.command.run({ command: 'later', args: 'сброс Дальше' })
+    expect(ran.text).toBe('Отложено: отправлю через 3 д 5 ч.')
+  })
+})
+
+describe('several messages', () => {
+  const LATER_ROWS = { type: 'Text', text: LATER_TEXT } as const
+
+  test('one after another, each with its own time', async ($, on) => {
+    const { store } = world(on, LIMITS)
+    const { box } = composer(on, 'Первое')
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+    await ui.press({ key: 'later' })
+    await ui.press({ key: 'later-other' })
+    await ui.input({ key: 'later-custom', text: '5ч5м' })
+    expect(box.text).toBe('')
+
+    box.text = 'Второе'
+    expect((await ui.find({ key: 'later' }))?.text).toBe('Отложить ещё')
+    await ui.press({ key: 'later' })
+    await ui.press({ key: 'later-other' })
+    await ui.input({ key: 'later-custom', text: '10ч10м' })
+
+    expect((await ui.findAll(LATER_ROWS)).map(t => t.text)).toEqual(['Отправлю через 5 ч 5 мин: «Первое»', 'Отправлю через 10 ч 10 мин: «Второе»'])
+    expect(store['later:one']).toEqual([
+      { id: 1, text: 'Первое', dueAt: NOW + 305 * MIN },
+      { id: 2, text: 'Второе', dueAt: NOW + 610 * MIN },
+    ])
+  })
+
+  test('each goes out at its own time, soonest first', async ($, on) => {
+    const { clock } = world(on, LIMITS)
+    const { box, sent } = composer(on, 'Через час')
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+    await ui.press({ key: 'later' })
+    await ui.press({ key: 'later-60' })
+    box.text = 'Через полчаса'
+    await ui.press({ key: 'later' })
+    await ui.press({ key: 'later-30' })
+    expect((await ui.findAll(LATER_ROWS)).map(t => t.text)).toEqual(['Отправлю через 30 мин: «Через полчаса»', 'Отправлю через 1 ч: «Через час»'])
+
+    await clock.advance(31 * MIN)
+    expect(sent).toEqual(['Через полчаса'])
+    expect((await ui.findAll(LATER_ROWS)).map(t => t.text)).toEqual(['Отправлю через 29 мин: «Через час»'])
+
+    await clock.advance(30 * MIN)
+    expect(sent).toEqual(['Через полчаса', 'Через час'])
+    expect((await ui.findAll(LATER_ROWS)).map(t => t.text)).toEqual([])
+    expect((await ui.find({ key: 'later' }))?.text).toBe('Отложить')
+  })
+
+  test('held by a spent limit, they keep their order and go one by one', async ($, on) => {
+    const { clock } = world(on, [{ kind: 'five_hour', percentUsed: 100, resetsAt: '2026-10-16T20:00:00Z' }])
+    const { sent } = composer(on)
+    await $.session.start(START)
+
+    await $.command.run({ command: 'later', args: '30 Раз' })
+    expect((await $.command.run({ command: 'later', args: '1ч Два' })).text).toBe(
+      'Отложено: отправлю через 1 ч. Всего отложено: 2.',
+    )
+
+    await clock.advance(31 * MIN)
+    expect(sent).toEqual([])
+    expect((await $.command.run({ command: 'later', args: '' })).text).toBe(
+      'Отложено сообщений: 2\n• через 2 ч 24 мин — «Раз»\n• через 2 ч 24 мин — «Два»',
+    )
+
+    // 20:01:05: the first went on the tick at 20:01, the second waits for the next one.
+    await clock.advance(144 * MIN + 5_000)
+    expect(sent).toEqual(['Раз'])
+    await clock.advance(15_000)
+    expect(sent).toEqual(['Раз', 'Два'])
+  })
+
+  test('cancel takes one, the others stay; /later отмена takes all', async ($, on) => {
+    const { store } = world(on, LIMITS)
+    composer(on)
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+    await $.command.run({ command: 'later', args: '30 Раз' })
+    await $.command.run({ command: 'later', args: '1ч Два' })
+    await $.command.run({ command: 'later', args: '2ч Три' })
+
+    await ui.press({ key: 'later-cancel-2' })
+    expect((await ui.findAll(LATER_ROWS)).map(t => t.text)).toEqual(['Отправлю через 30 мин: «Раз»', 'Отправлю через 2 ч: «Три»'])
+    expect((store['later:one'] as unknown[]).length).toBe(2)
+
+    expect((await $.command.run({ command: 'later', args: 'отмена' })).text).toBe('Отложенные сообщения отменены: 2.')
+    expect((await ui.findAll(LATER_ROWS)).map(t => t.text)).toEqual([])
+    expect(store['later:one']).toBeUndefined()
+  })
+
+  test('a list kept before a restart comes back whole', async ($, on) => {
+    const { clock } = world(on, LIMITS, {
+      'later:one': [
+        { id: 4, text: 'Скоро', dueAt: NOW + 5 * MIN },
+        { id: 7, text: 'Позже', dueAt: NOW + 20 * MIN },
+      ],
+    })
+    const { sent } = composer(on)
+    await $.session.start(START)
+
+    await clock.advance(6 * MIN)
+    expect(sent).toEqual(['Скоро'])
+    await clock.advance(15 * MIN)
+    expect(sent).toEqual(['Скоро', 'Позже'])
+  })
+
+  test('on the desktop the messages sit between the bars and the buttons', async ($, on) => {
+    world(on, LIMITS, {}, FILLED)
+    composer(on)
+    await $.session.start(START)
+    await $.command.run({ command: 'later', args: '30 Раз' })
+    await $.command.run({ command: 'later', args: '1ч Два' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+    expect((await ui.findAll(LATER_ROWS)).map(t => t.text)).toEqual(['Отправлю через 30 мин: «Раз»', 'Отправлю через 1 ч: «Два»'])
+    expect((await ui.findAll({ type: 'Button' })).map(button => button.key)).toEqual([
+      'later-now-1',
+      'later-cancel-1',
+      'later-now-2',
+      'later-cancel-2',
+      'compact',
+      'later',
+    ])
   })
 })
 

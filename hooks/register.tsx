@@ -22,7 +22,7 @@ const compactedTo = atom({ plugin: 'limits-countdown', key: 'compactedTo' } as c
 const isConfirming = atom({ plugin: 'limits-countdown', key: 'isConfirming' } as const, false)
 const isCompacting = atom({ plugin: 'limits-countdown', key: 'isCompacting' } as const, false)
 
-const later = atom({ plugin: 'limits-countdown', key: 'later' } as const, null)
+const queue = atom({ plugin: 'limits-countdown', key: 'queue' } as const, [])
 const armed = atom({ plugin: 'limits-countdown', key: 'armed' } as const, null)
 const isPicking = atom({ plugin: 'limits-countdown', key: 'isPicking' } as const, false)
 const isTyping = atom({ plugin: 'limits-countdown', key: 'isTyping' } as const, false)
@@ -36,6 +36,8 @@ const MIN_MS = 60_000
 const LATE_MS = 10 * MIN_MS
 // A reset is read a little late, so a message waiting for one goes after it.
 const AFTER_RESET_MS = MIN_MS
+// Rows of waiting messages the band shows; /later lists them all.
+const SHOWN = 5
 const PRESETS: readonly (readonly [number, string])[] = [
   [30, '30 мин'],
   [60, '1 ч'],
@@ -79,90 +81,135 @@ async function showContext($: EngineInterface, fresh: Context) {
   if (fresh.tokens !== undefined) await update($, compactedTo, () => null)
 }
 
-// Each session holds its own message, kept in the store so that a restart
-// of the app does not lose it.
+// Each session holds its own messages, kept in the store so that a restart
+// of the app does not lose them.
 const laterKey = async ($: EngineInterface) => `later:${await $.session.id()}`
 
-function laterOf(value: unknown): Later | null {
+function itemOf(value: unknown, id: number): Later | null {
   if (typeof value !== 'object' || value === null) return null
   const { text, dueAt, isHeld } = value as Later
   if (typeof text !== 'string' || typeof dueAt !== 'number') return null
-  return isHeld ? { text, dueAt, isHeld: true } : { text, dueAt }
+  return isHeld ? { id, text, dueAt, isHeld: true } : { id, text, dueAt }
 }
 
-async function keep($: EngineInterface, item: Later | null) {
-  await update($, later, () => item)
-  // The copy on disk only serves a restart: without it the message still
-  // goes out while this session runs.
+// Soonest first; messages due at the same moment keep the order they came in.
+const soonestFirst = (list: readonly Later[]) => [...list].sort((a, b) => a.dueAt - b.dueAt)
+
+// What the store holds: a list since 0.9.0, the one message 0.8 kept before.
+function queueOf(value: unknown): Later[] {
+  const kept = Array.isArray(value) ? value : [value]
+  return soonestFirst(kept.map((item, i) => itemOf(item, i + 1)).filter((item): item is Later => item !== null))
+}
+
+const nextId = (list: readonly Later[]) => list.reduce((max, item) => Math.max(max, item.id), 0) + 1
+
+async function edit($: EngineInterface, change: (list: readonly Later[]) => Later[]): Promise<Later[]> {
+  const list = await update($, queue, list => soonestFirst(change(list)))
+  // The copy on disk only serves a restart: without it the messages still
+  // go out while this session runs.
   try {
     const key = await laterKey($)
-    if (item === null) await $.store.delete(key)
-    else await $.store.set(key, item)
+    if (list.length === 0) await $.store.delete(key)
+    else await $.store.set(key, list)
   } catch {
     // kept for this run only
   }
+  return list
 }
 
-// A message held from before a restart: sent on time if its time is still
-// ahead or has only just passed, otherwise it waits to be asked.
+// Messages held from before a restart: each sent on time if its time is
+// still ahead or has only just passed, otherwise it waits to be asked.
 async function restore($: EngineInterface, t: number) {
   try {
-    const held = laterOf(await $.store.get(await laterKey($)))
-    if (held !== null) {
-      await update($, later, () => (held.dueAt < t - LATE_MS ? { ...held, isHeld: true } : held))
+    const kept = queueOf(await $.store.get(await laterKey($)))
+    if (kept.length > 0) {
+      await update($, queue, () => kept.map(item => (item.dueAt < t - LATE_MS ? { ...item, isHeld: true } : item)))
     }
-    await $.command.register({ name: 'later', description: 'Отложить сообщение: /later 2ч текст (сброс, отмена)' })
+    await $.command.register({
+      name: 'later',
+      description: 'Отложить сообщение: /later 2ч текст (сброс, отмена); можно несколько подряд',
+    })
   } catch {
     // the band and its buttons work without either
   }
 }
 
-async function schedule($: EngineInterface, text: string, dueAt: number) {
-  await keep($, { text, dueAt })
+async function closePicker($: EngineInterface) {
   await update($, armed, () => null)
   await update($, isPicking, () => false)
   await update($, isTyping, () => false)
 }
 
-const dueOf = (choice: Armed, t: number) => choice.at ?? t + (choice.ms ?? 0)
-
-// When the session's window resets, if that is still ahead.
-function resetAhead(list: readonly Limit[], t: number, kind = 'five_hour'): number | null {
-  const at = Date.parse(list.find(limit => limit.kind === kind)?.resetsAt ?? '')
-  return at > t ? at : null
+// One more message waits; resolves to how many wait now.
+async function add($: EngineInterface, text: string, dueAt: number): Promise<number> {
+  const list = await edit($, list => [...list, { id: nextId(list), text, dueAt }])
+  await closePicker($)
+  return list.length
 }
 
-// A limit that is spent and not yet reset: a message sent now would only
-// be refused, so it waits for that reset instead.
-function blockedUntil(list: readonly Limit[], t: number): number | null {
-  const waits = list
-    .filter(limit => limit.percentUsed >= 100)
-    .map(limit => Date.parse(limit.resetsAt ?? ''))
-    .filter(at => at > t)
-  return waits.length > 0 ? Math.max(...waits) : null
+const totalOf = (count: number) => (count > 1 ? ` Всего отложено: ${count}.` : '')
+
+const dueOf = (choice: Armed, t: number) => choice.at ?? t + (choice.ms ?? 0)
+
+type Reset = { at: number; kind: string }
+
+// What the band shows as 100% is spent.
+const isSpent = (limit: Limit) => Math.round(limit.percentUsed) >= 100
+
+// A limit that is spent and not yet reset: a message sent now would only be
+// refused, so it waits for the latest such reset instead.
+function spentUntil(list: readonly Limit[], t: number): Reset | null {
+  let last: Reset | null = null
+  for (const limit of list) {
+    const at = Date.parse(limit.resetsAt ?? '')
+    if (isSpent(limit) && at > t && (last === null || at > last.at)) last = { at, kind: limit.kind }
+  }
+  return last
+}
+
+// "After the reset": when the session window resets, unless a spent limit
+// (the week at 100%, say) holds every message past its own reset, which the
+// session window's would not lift.
+function nextReset(list: readonly Limit[], t: number): Reset | null {
+  const spent = spentUntil(list, t)
+  if (spent !== null) return spent
+  const at = Date.parse(list.find(limit => limit.kind === 'five_hour')?.resetsAt ?? '')
+  return at > t ? { at, kind: 'five_hour' } : null
 }
 
 let isSending = false
 
-async function sendDue($: EngineInterface, isForced = false) {
+// Sends the soonest message whose time has come, one a call, so that each
+// is a turn of its own; `id` sends that one now, whatever its time.
+async function sendDue($: EngineInterface, id?: number) {
   if (isSending) return
-  const item = await read($, later)
-  if (item === null) return
+  const list = await read($, queue)
+  let item: Later | undefined
 
-  if (!isForced) {
+  if (id === undefined) {
     const t = await $.clock.now()
-    if (item.isHeld || item.dueAt > t) return
-    const wait = blockedUntil(await read($, limits), t)
-    if (wait !== null) return keep($, { text: item.text, dueAt: wait + AFTER_RESET_MS })
+    item = list.find(each => !each.isHeld && each.dueAt <= t)
+    if (item === undefined) return
+    const spent = spentUntil(await read($, limits), t)
+    if (spent !== null) {
+      // Every message that would fall before the reset waits for it, in order.
+      const after = spent.at + AFTER_RESET_MS
+      await edit($, list => list.map(each => (!each.isHeld && each.dueAt < after ? { ...each, dueAt: after } : each)))
+      return
+    }
+  } else {
+    item = list.find(each => each.id === id)
   }
+  if (item === undefined) return
 
+  const sending = item
   isSending = true
   try {
-    await keep($, null)
-    const sent = await $.prompt.submit({ text: item.text, asUser: true })
+    await edit($, list => list.filter(each => each.id !== sending.id))
+    const sent = await $.prompt.submit({ text: sending.text, asUser: true })
     if (sent.drop !== undefined) throw new Error(sent.drop)
   } catch (err) {
-    await keep($, { text: item.text, dueAt: item.dueAt, isHeld: true })
+    await edit($, list => [...list, { ...sending, isHeld: true }])
     $.ui.toast(`Отложенное сообщение не ушло: ${err instanceof Error ? err.message : String(err)}`)
   } finally {
     isSending = false
@@ -180,7 +227,7 @@ async function pick($: EngineInterface, choice: Armed) {
   }
 
   if (draft !== '' && !draft.startsWith('/')) {
-    await schedule($, draft, dueOf(choice, await $.clock.now()))
+    await add($, draft, dueOf(choice, await $.clock.now()))
     await $.prompt.fill({ text: '' }).catch(() => undefined)
     return
   }
@@ -202,6 +249,9 @@ async function tick($: EngineInterface) {
 
   await sendDue($)
 }
+
+const whenOf = (item: Later, t: number) =>
+  item.isHeld ? 'не отправлено вовремя' : item.dueAt <= t ? 'отправляю' : `через ${formatLeft(item.dueAt - t)}`
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -261,38 +311,41 @@ export const register: Register = on => {
 
     const t = await $.clock.now()
     const dueAt = dueOf(choice, t)
-    await schedule($, e.text, dueAt)
+    const count = await add($, e.text, dueAt)
     const lost = e.attachments !== undefined && e.attachments.length > 0 ? ' Вложения не сохраняются, уйдёт только текст.' : ''
 
-    return { drop: `Отложено: отправлю через ${formatLeft(dueAt - t)}.${lost}` }
+    return { drop: `Отложено: отправлю через ${formatLeft(dueAt - t)}.${totalOf(count)}${lost}` }
   }).catch(($, e, next) => next(e)) // a fault here never holds a message back
 
   on('command.run', { command: 'later' }, async ($, e) => {
     const args = e.args.trim()
     const t = await $.clock.now()
-    const item = await read($, later)
+    const list = await read($, queue)
 
     if (args === '') {
+      if (list.length === 0) return { text: 'Отложенных сообщений нет. Пример: /later 2ч текст сообщения' }
       return {
-        text:
-          item === null
-            ? 'Отложенных сообщений нет. Пример: /later 2ч текст сообщения'
-            : `Отложено «${preview(item.text, 60)}»: ${item.dueAt > t ? `через ${formatLeft(item.dueAt - t)}` : 'время прошло'}.`,
+        text: [
+          `Отложено сообщений: ${list.length}`,
+          ...list.map(item => `• ${whenOf(item, t)} — «${preview(item.text, 60)}»`),
+        ].join('\n'),
       }
     }
     if (/^(отмена|cancel|off|стоп)$/i.test(args)) {
-      await keep($, null)
-      await update($, armed, () => null)
-      return { text: 'Отложенная отправка отменена.' }
+      await edit($, () => [])
+      await closePicker($)
+      return {
+        text: list.length > 0 ? `Отложенные сообщения отменены: ${list.length}.` : 'Отложенная отправка отменена.',
+      }
     }
 
     const [first = '', ...rest] = args.split(/\s+/)
     const text = rest.join(' ')
     let choice: Armed | null = null
     if (/^(сброс|reset)$/i.test(first)) {
-      const at = resetAhead(await read($, limits), t)
-      if (at === null) return { text: 'Время сброса лимита сессии пока неизвестно.' }
-      choice = { at: at + AFTER_RESET_MS }
+      const reset = nextReset(await read($, limits), t)
+      if (reset === null) return { text: 'Время сброса лимита пока неизвестно.' }
+      choice = { at: reset.at + AFTER_RESET_MS }
     } else {
       const ms = parseDelay(first)
       if (ms !== null) choice = { ms }
@@ -307,8 +360,8 @@ export const register: Register = on => {
       await update($, armed, () => picked)
       return { text: `Следующее сообщение будет отложено на ${formatLeft(dueAt - t)}.` }
     }
-    await schedule($, text, dueAt)
-    return { text: `Отложено: отправлю через ${formatLeft(dueAt - t)}.` }
+    const count = await add($, text, dueAt)
+    return { text: `Отложено: отправлю через ${formatLeft(dueAt - t)}.${totalOf(count)}` }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -318,8 +371,10 @@ export const register: Register = on => {
 
     const list = await read($, limits)
     const contextLine = describeContext(await read($, context), await read($, compactedTo))
+    const items = await read($, queue)
+    const choice = await read($, armed)
 
-    if (list.length === 0 && contextLine === null && (await read($, later)) === null && (await read($, armed)) === null) {
+    if (list.length === 0 && contextLine === null && items.length === 0 && choice === null) {
       return next(e)
     }
 
@@ -330,67 +385,98 @@ export const register: Register = on => {
     const { Box, Button, Input, Text } = elements
     // Bars are drawn where the surface has images; the terminal keeps its row of text.
     const Svg = e.surface !== 'terminal' && 'Svg' in elements ? elements.Svg : undefined
-    const held = await read($, later)
-    const choice = await read($, armed)
     const picking = await read($, isPicking)
     const typing = await read($, isTyping)
-    const resetAt = resetAhead(list, t)
+    const reset = nextReset(list, t)
 
-    const cancel = async () => {
-      await keep($, null)
-      await update($, armed, () => null)
-      await update($, isPicking, () => false)
-      await update($, isTyping, () => false)
-    }
     const custom = async (value: string) => {
       const ms = parseDelay(value)
       if (ms === null) $.ui.toast('Не понял время. Примеры: 90, 2ч, 1ч30м')
       else await pick($, { ms })
     }
 
+    // Each waiting message on a row of its own, soonest first.
+    const rows = items.slice(0, SHOWN).map(item => (
+      <Box
+        key={`later-item-${item.id}`}
+        flexDirection="row"
+        flexWrap="wrap"
+        justifyContent="center"
+        alignItems="center"
+        columnGap={2}
+      >
+        <Text color={item.isHeld ? 'warning' : 'suggestion'} tabular weight="bold">
+          {item.isHeld
+            ? `Не отправлено вовремя: «${preview(item.text)}»`
+            : item.dueAt <= t
+              ? `Отправляю: «${preview(item.text)}»`
+              : `Отправлю через ${formatLeft(item.dueAt - t)}: «${preview(item.text)}»`}
+        </Text>
+        <Button key={`later-now-${item.id}`} label="Сейчас" dimColor onPress={() => void sendDue($, item.id)} />
+        <Button
+          key={`later-cancel-${item.id}`}
+          label="Отменить"
+          dimColor
+          onPress={() => void edit($, list => list.filter(each => each.id !== item.id))}
+        />
+      </Box>
+    ))
+    const queueBox =
+      items.length === 0 ? (
+        []
+      ) : (
+        <Box key="later-queue" flexDirection="column" alignItems="center" width="100%">
+          {rows}
+          {items.length > SHOWN ? (
+            <Text key="later-more" dimColor>
+              {`и ещё ${items.length - SHOWN}, весь список: /later`}
+            </Text>
+          ) : (
+            []
+          )}
+        </Box>
+      )
+
     const laterRow =
-      held !== null
+      choice !== null
         ? [
-            <Text key="later-text" color={held.isHeld ? 'warning' : 'suggestion'} tabular weight="bold">
-              {held.isHeld || held.dueAt <= t
-                ? `Не отправлено вовремя: «${preview(held.text)}»`
-                : `Отправлю через ${formatLeft(held.dueAt - t)}: «${preview(held.text)}»`}
+            <Text key="later-armed" color="suggestion" weight="bold">
+              {`Напишите сообщение — уйдёт через ${formatLeft(dueOf(choice, t) - t)}`}
             </Text>,
-            <Button key="later-now" label="Сейчас" dimColor onPress={() => void sendDue($, true)} />,
-            <Button key="later-cancel" label="Отменить" dimColor onPress={() => void cancel()} />,
+            <Button key="later-cancel" label="Отмена" dimColor onPress={() => void closePicker($)} />,
           ]
-        : choice !== null
+        : picking && typing
           ? [
-              <Text key="later-armed" color="suggestion" weight="bold">
-                {`Напишите сообщение — уйдёт через ${formatLeft(dueOf(choice, t) - t)}`}
-              </Text>,
-              <Button key="later-cancel" label="Отмена" dimColor onPress={() => void cancel()} />,
+              <Text key="later-ask" dimColor weight="bold">Через</Text>,
+              <Input key="later-custom" placeholder="90 мин, 2ч, 1ч30м" submitLabel="ок" onSubmit={value => void custom(value)} />,
+              <Button key="later-back" label="Назад" dimColor onPress={() => update($, isTyping, () => false)} />,
             ]
-          : picking && typing
+          : picking
             ? [
-                <Text key="later-ask" dimColor weight="bold">Через</Text>,
-                <Input key="later-custom" placeholder="90 мин, 2ч, 1ч30м" submitLabel="ок" onSubmit={value => void custom(value)} />,
-                <Button key="later-back" label="Назад" dimColor onPress={() => update($, isTyping, () => false)} />,
+                <Text key="later-ask" dimColor weight="bold">Отправить через</Text>,
+                ...PRESETS.map(([minutes, label]) => (
+                  <Button key={`later-${minutes}`} label={label} onPress={() => void pick($, { ms: minutes * MIN_MS })} />
+                )),
+                ...(reset === null
+                  ? []
+                  : [
+                      <Button
+                        key="later-reset"
+                        label={reset.kind.startsWith('seven_day') ? 'после сброса недели' : 'после сброса'}
+                        onPress={() => void pick($, { at: reset.at + AFTER_RESET_MS })}
+                      />,
+                    ]),
+                <Button key="later-other" label="другое" onPress={() => update($, isTyping, () => true)} />,
+                <Button key="later-cancel" label="Отмена" dimColor onPress={() => void closePicker($)} />,
               ]
-            : picking
-              ? [
-                  <Text key="later-ask" dimColor weight="bold">Отправить через</Text>,
-                  ...PRESETS.map(([minutes, label]) => (
-                    <Button key={`later-${minutes}`} label={label} onPress={() => void pick($, { ms: minutes * MIN_MS })} />
-                  )),
-                  ...(resetAt === null
-                    ? []
-                    : [
-                        <Button
-                          key="later-reset"
-                          label="после сброса"
-                          onPress={() => void pick($, { at: resetAt + AFTER_RESET_MS })}
-                        />,
-                      ]),
-                  <Button key="later-other" label="другое" onPress={() => update($, isTyping, () => true)} />,
-                  <Button key="later-cancel" label="Отмена" dimColor onPress={() => void cancel()} />,
-                ]
-              : [<Button key="later" label="Отложить" dimColor onPress={() => update($, isPicking, () => true)} />]
+            : [
+                <Button
+                  key="later"
+                  label={items.length > 0 ? 'Отложить ещё' : 'Отложить'}
+                  dimColor
+                  onPress={() => update($, isPicking, () => true)}
+                />,
+              ]
 
     // The same /compact the person would type: the desktop app runs it as a
     // turn of its own, where a plugin's direct compaction is refused.
@@ -451,16 +537,18 @@ export const register: Register = on => {
               {controls}
             </Box>
           )}
+          {queueBox}
           {laterBox}
         </Box>
       )
     }
 
-    // Gauges side by side, each a label over its bar; the buttons on a row
-    // of their own, which the time picker takes whole while it is open.
+    // Gauges side by side, each a label over its bar; the waiting messages
+    // below, then the buttons on a row of their own, which the time picker
+    // takes whole while it is open.
     const fill = contextMeter(await read($, context), await read($, compactedTo))
     const meters = [...limitMeters(list, t), ...(fill === null ? [] : [fill])]
-    const isChoosing = held === null && choice === null && picking
+    const isChoosing = choice === null && picking
 
     return (
       <Box flexDirection="column" alignItems="center" rowGap={1} width="100%">
@@ -482,6 +570,7 @@ export const register: Register = on => {
             </Box>
           ))}
         </Box>
+        {queueBox}
         <Box flexDirection="row" flexWrap="wrap" justifyContent="center" alignItems="center" columnGap={3}>
           {fill === null || isChoosing ? [] : controls}
           {laterBox}
