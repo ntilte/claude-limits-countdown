@@ -52,7 +52,7 @@ function world(
     return { value: undefined }
   })
   on('session.id', () => ({ value: 'one' }))
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
   const usage = { context, rateLimits }
   on('session.usage', () => ({ value: { startedAt: NOW, ...usage } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -78,6 +78,8 @@ function composer(on: On, draft = '') {
 
 const START = { cwd: 'C:/', surface: 'desktop', isInteractive: true } as const
 const LATER_TEXT = /^(Отправлю|Не отправлено|Напишите)/
+// A command typed by the person, as the engine stamps it.
+const TYPED = { origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as const
 
 describe('formatLeft', () => {
   test('days and hours past a day, hours and minutes under it', async () => {
@@ -452,7 +454,7 @@ describe('send later', () => {
       'Напишите сообщение — уйдёт через 1 ч 30 мин',
     )
 
-    const entered = await $.prompt.submit({ text: 'Проверь сборку', origin: { kind: 'composer' } })
+    const entered = await $.prompt.submit({ text: 'Проверь сборку', origin: { kind: 'composer' }, wait: false })
     expect(entered.drop).toBe('Отложено: отправлю через 1 ч 30 мин.')
     expect(sent).toEqual([])
 
@@ -460,7 +462,7 @@ describe('send later', () => {
     expect(sent).toEqual(['Проверь сборку'])
 
     // Nothing is armed any more: the next message goes straight through.
-    await $.prompt.submit({ text: 'Сразу', origin: { kind: 'composer' } })
+    await $.prompt.submit({ text: 'Сразу', origin: { kind: 'composer' }, wait: false })
     expect(sent).toEqual(['Проверь сборку', 'Сразу'])
   })
 
@@ -545,9 +547,9 @@ describe('send later', () => {
     const { sent } = composer(on)
     await $.session.start(START)
 
-    const ran = await $.command.run({ command: 'later', args: '2ч Запусти тесты' })
+    const ran = await $.command.run({ command: 'later', args: '2ч Запусти тесты', ...TYPED })
     expect(ran.text).toBe('Отложено: отправлю через 2 ч.')
-    expect((await $.command.run({ command: 'later', args: 'когда-нибудь' })).text).toMatch(/^Не понял время/)
+    expect((await $.command.run({ command: 'later', args: 'когда-нибудь', ...TYPED })).text).toMatch(/^Не понял время/)
 
     await clock.advance(121 * MIN)
     expect(sent).toEqual(['Запусти тесты'])
@@ -584,7 +586,7 @@ describe('after the reset', () => {
     composer(on)
     await $.session.start(START)
 
-    const ran = await $.command.run({ command: 'later', args: 'сброс Дальше' })
+    const ran = await $.command.run({ command: 'later', args: 'сброс Дальше', ...TYPED })
     expect(ran.text).toBe('Отложено: отправлю через 3 д 5 ч.')
   })
 
@@ -593,7 +595,7 @@ describe('after the reset', () => {
     composer(on)
     await $.session.start(START)
 
-    const ran = await $.command.run({ command: 'later', args: 'сброс Дальше' })
+    const ran = await $.command.run({ command: 'later', args: 'сброс Дальше', ...TYPED })
     expect(ran.text).toBe('Отложено: отправлю через 2 ч 55 мин.')
   })
 
@@ -605,7 +607,7 @@ describe('after the reset', () => {
     composer(on)
     await $.session.start(START)
 
-    const ran = await $.command.run({ command: 'later', args: 'сброс Дальше' })
+    const ran = await $.command.run({ command: 'later', args: 'сброс Дальше', ...TYPED })
     expect(ran.text).toBe('Отложено: отправлю через 3 д 5 ч.')
   })
 })
@@ -665,14 +667,14 @@ describe('several messages', () => {
     const { sent } = composer(on)
     await $.session.start(START)
 
-    await $.command.run({ command: 'later', args: '30 Раз' })
-    expect((await $.command.run({ command: 'later', args: '1ч Два' })).text).toBe(
+    await $.command.run({ command: 'later', args: '30 Раз', ...TYPED })
+    expect((await $.command.run({ command: 'later', args: '1ч Два', ...TYPED })).text).toBe(
       'Отложено: отправлю через 1 ч. Всего отложено: 2.',
     )
 
     await clock.advance(31 * MIN)
     expect(sent).toEqual([])
-    expect((await $.command.run({ command: 'later', args: '' })).text).toBe(
+    expect((await $.command.run({ command: 'later', args: '', ...TYPED })).text).toBe(
       'Отложено сообщений: 2\n• через 2 ч 24 мин — «Раз»\n• через 2 ч 24 мин — «Два»',
     )
 
@@ -689,15 +691,15 @@ describe('several messages', () => {
     await $.session.start(START)
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
-    await $.command.run({ command: 'later', args: '30 Раз' })
-    await $.command.run({ command: 'later', args: '1ч Два' })
-    await $.command.run({ command: 'later', args: '2ч Три' })
+    await $.command.run({ command: 'later', args: '30 Раз', ...TYPED })
+    await $.command.run({ command: 'later', args: '1ч Два', ...TYPED })
+    await $.command.run({ command: 'later', args: '2ч Три', ...TYPED })
 
     await ui.press({ key: 'later-cancel-2' })
     expect((await ui.findAll(LATER_ROWS)).map(t => t.text)).toEqual(['Отправлю через 30 мин: «Раз»', 'Отправлю через 2 ч: «Три»'])
     expect((store['later:one'] as unknown[]).length).toBe(2)
 
-    expect((await $.command.run({ command: 'later', args: 'отмена' })).text).toBe('Отложенные сообщения отменены: 2.')
+    expect((await $.command.run({ command: 'later', args: 'отмена', ...TYPED })).text).toBe('Отложенные сообщения отменены: 2.')
     expect((await ui.findAll(LATER_ROWS)).map(t => t.text)).toEqual([])
     expect(store['later:one']).toBeUndefined()
   })
@@ -722,8 +724,8 @@ describe('several messages', () => {
     world(on, LIMITS, {}, FILLED)
     composer(on)
     await $.session.start(START)
-    await $.command.run({ command: 'later', args: '30 Раз' })
-    await $.command.run({ command: 'later', args: '1ч Два' })
+    await $.command.run({ command: 'later', args: '30 Раз', ...TYPED })
+    await $.command.run({ command: 'later', args: '1ч Два', ...TYPED })
     const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
     expect((await ui.findAll(LATER_ROWS)).map(t => t.text)).toEqual(['Отправлю через 30 мин: «Раз»', 'Отправлю через 1 ч: «Два»'])
